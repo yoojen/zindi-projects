@@ -7,7 +7,7 @@ import pandas as pd
 from catboost import CatBoostClassifier
 from lightgbm import LGBMClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import classification_report, roc_auc_score, log_loss
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 from dotenv import load_dotenv
@@ -51,9 +51,7 @@ class FeaturePipeline:
         self.x_diff_3m = np.array([-1.0, 0.0, 1.0])
         self.x_var_3m = 2.0
 
-    def _compute_slopes(
-        self, df: pd.DataFrame, prefix: str, months: int = 6
-    ) -> np.ndarray:
+    def _compute_slopes(self, df: pd.DataFrame, prefix: str, months: int = 6) -> np.ndarray:
         """Calculates linear slopes across M6->M1 or M3->M1."""
         cols = [f"m{i}_{prefix}" for i in range(months, 0, -1)]
         if not all(c in df.columns for c in cols):
@@ -67,18 +65,99 @@ class FeaturePipeline:
 
         return np.sum((matrix - matrix_mean) * x_diff, axis=1) / x_var
 
-    def transform(
-        self, df: pd.DataFrame, is_train: bool = True
-    ) -> tuple[pd.DataFrame, pd.Series | None]:
+    def get_bal_avg_cols(self, df: pd.DataFrame):
+        months = ["m1", "m2", "m3", "m4", "m5", "m6"]
+        return [f"{m}_daily_avg_bal" for m in months]
+
+    def bal_avg_mom_calculations(self, df: pd.DataFrame):
+        months = ["m1", "m2", "m3", "m4", "m5", "m6"]
+
+        # Example using Daily Average Balance
+        avg_diff_dict = {}
+        for i in range(len(months) - 1):
+            current = f"{months[i]}_daily_avg_bal"
+            previous = f"{months[i + 1]}_daily_avg_bal"
+
+            # 1. Create Raw Difference Feature (Do not overwrite anything)
+            avg_diff_dict[f"{months[i]}_{months[i + 1]}_bal_diff_raw"] = df[current] - df[previous]
+
+            # 2. Create Safe Percentage Difference (Add a +1 stabilizer to prevent 0 division)
+            # This prevents division-by-zero errors when accounts hit zero balances
+            avg_diff_dict[f"{months[i]}_{months[i + 1]}_bal_diff_pct"] = (df[current] - df[previous]) / (df[previous] + 1)
+
+        return pd.DataFrame(avg_diff_dict)
+
+    def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+        regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
+        matched_cols = [col for col in df.columns if re.search(regex, col)]
+        new_df_dict = {}
+        print(matched_cols)
+        for col in matched_cols:
+            month = col[1]
+            if int(month) == 6:
+                # if not new_df_dict.get(f"{col}_mom"):
+                #     new_df_dict[f"{col}_mom"] = []
+                # new_df_dict[f"{col}_mom"] = np.zeros(len(df))
+                # There is no change needed because it is the first month
+                new_df_dict[f"{col}_mom"] = df[col]
+            else:
+                # Reverse the month numbering to get the preceeding month (M6->M1)
+                preceeding_col = int(month) + 1
+                # if not new_df_dict.get(f"{col}_mom"):
+                #     new_df_dict[f"{col}_mom"] = []
+                col_suffix = col[3:]
+                # Use np.where to avoid division by zero which results into np.inf which boosting models cannot handle
+                change = df[col] - df[f"m{preceeding_col}_{col_suffix}"]
+                new_df_dict[f"{col}_mom"] = change
+
+                # Percentage change
+                new_df_dict[f"{col}_mom"] = np.where(
+                    df[f"m{preceeding_col}_{col_suffix}"] == 0,
+                    change / 1,
+                    change / df[f"m{preceeding_col}_{col_suffix}"],
+                )
+                # new_df_dict[f"{col}_mom"] = (
+                #     df[col] - df[f"m{preceeding_col}_{col_suffix}"]
+                # )
+
+                # Percentage change
+                # new_df_dict[f"{col}_mom_perc"] = (
+                #     change / df[f"m{preceeding_col}_{col_suffix}"]
+                # )
+
+        # fields_mom = {}
+        # for month in range(1, 7):
+        #     field = f"m{month}_{field_suffix}"
+        #     if month == 1:
+        #         fields_mom[f"{field}_mom"] = 0.0
+        #     else:
+        #         fields_mom[f"{field}_mom"] = (
+        #             df[field] - df[f"m{month - 1}_{field_suffix}"]
+        #         )
+
+        return pd.DataFrame(new_df_dict), matched_cols
+
+        # Month over month calculation
+
+    def dail_average_balance_tranformation(self, df: pd.DataFrame):
+        # Leave recent months in dataframe, aggregates, and remove old months
+        recent3_months = [f"m{i}_daily_avg_bal" for i in range(1, 4)]
+        old3_months = [f"m{i}_daily_avg_bal" for i in range(4, 7)]
+        df["recent3_avg_balance"] = df[recent3_months].mean(axis=1)
+        df["old3_avg_balance"] = df[old3_months].mean(axis=1)
+
+        # Remove old months
+        df = df.drop(columns=old3_months)
+
+        return df
+
+    def transform(self, df: pd.DataFrame, is_train: bool = True) -> tuple[pd.DataFrame, pd.Series | None]:
         data = df.copy()
-        epsilon = 1e-6
+        # epsilon = 1e-6
+        epsilon = 1
 
         # 1. Pop Target and drop ID
-        y = (
-            data.pop(self.target_col)
-            if (is_train and self.target_col in data)
-            else None
-        )
+        y = data.pop(self.target_col) if (is_train and self.target_col in data) else None
         if self.id_col in data.columns:
             data.drop(columns=[self.id_col], inplace=True)
 
@@ -86,40 +165,11 @@ class FeaturePipeline:
         inflow_channels = ["deposit", "received", "transfer_from_bank"]
         outflow_channels = ["withdraw", "paybill", "merchantpay", "mm_send"]
 
-        # for m in range(1, 7):
-        #     # Sum monthly total values
-        #     inf_cols = [
-        #         f"m{m}_{ch}_total_value"
-        #         for ch in inflow_channels
-        #         if f"m{m}_{ch}_total_value" in data.columns
-        #     ]
-        #     out_cols = [
-        #         f"m{m}_{ch}_total_value"
-        #         for ch in outflow_channels
-        #         if f"m{m}_{ch}_total_value" in data.columns
-        #     ]
-
-        #     data[f"m{m}_total_inflow"] = data[inf_cols].sum(axis=1) if inf_cols else 0.0
-        #     data[f"m{m}_total_outflow"] = (
-        #         data[out_cols].sum(axis=1) if out_cols else 0.0
-        #     )
-        #     data[f"m{m}_net_flow"] = (
-        #         data[f"m{m}_total_inflow"] - data[f"m{m}_total_outflow"]
-        #     )
-
         new_features = {}
         for m in range(1, 7):
             # Sum monthly total values
-            inf_cols = [
-                f"m{m}_{ch}_total_value"
-                for ch in inflow_channels
-                if f"m{m}_{ch}_total_value" in data.columns
-            ]
-            out_cols = [
-                f"m{m}_{ch}_total_value"
-                for ch in outflow_channels
-                if f"m{m}_{ch}_total_value" in data.columns
-            ]
+            inf_cols = [f"m{m}_{ch}_total_value" for ch in inflow_channels if f"m{m}_{ch}_total_value" in data.columns]
+            out_cols = [f"m{m}_{ch}_total_value" for ch in outflow_channels if f"m{m}_{ch}_total_value" in data.columns]
 
             # 2. Assign calculations to the dictionary instead of 'data'
             total_inflow = data[inf_cols].sum(axis=1) if inf_cols else 0.0
@@ -145,15 +195,9 @@ class FeaturePipeline:
         data["outflow_median_baseline_3m"] = data[m4_6_outflow].median(axis=1)
 
         # 3M Flow Dynamics / Ratios
-        data["inflow_drift_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (
-            data["inflow_median_baseline_3m"] + epsilon
-        )
-        data["outflow_drift_3m"] = (data["outflow_median_recent_3m"] + epsilon) / (
-            data["outflow_median_baseline_3m"] + epsilon
-        )
-        data["net_coverage_recent_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (
-            data["outflow_median_recent_3m"] + epsilon
-        )
+        data["inflow_drift_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (data["inflow_median_baseline_3m"] + epsilon)
+        data["outflow_drift_3m"] = (data["outflow_median_recent_3m"] + epsilon) / (data["outflow_median_baseline_3m"] + epsilon)
+        data["net_coverage_recent_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (data["outflow_median_recent_3m"] + epsilon)
 
         # 4. Slopes (3m and 6m Trajectories)
         data["bal_slope_6m"] = self._compute_slopes(data, "daily_avg_bal", months=6)
@@ -163,52 +207,45 @@ class FeaturePipeline:
 
         # 5. Granular End-Points (M1 & M6) and Ratios
         if "m1_daily_avg_bal" in data.columns and "m6_daily_avg_bal" in data.columns:
-            data["bal_m1_m6_ratio"] = (data["m1_daily_avg_bal"] + epsilon) / (
-                data["m6_daily_avg_bal"] + epsilon
-            )
+            data["bal_m1_m6_ratio"] = (data["m1_daily_avg_bal"] + epsilon) / (data["m6_daily_avg_bal"] + epsilon)
 
         if "m1_total_outflow" in data.columns and "m1_daily_avg_bal" in data.columns:
-            data["m1_cashout_intensity"] = data["m1_total_outflow"] / (
-                data["m1_daily_avg_bal"] + epsilon
-            )
+            data["m1_cashout_intensity"] = data["m1_total_outflow"] / (data["m1_daily_avg_bal"] + epsilon)
+
+        # Last three months cashout intensity
+        recent3_total_outflow = [f"m{i}_total_outflow" for i in range(1, 4)]
+        old3_total_outflows = [f"m{i}_total_outflow" for i in range(4, 7)]
+        data["avg_recent3_cashout"] = data[recent3_total_outflow].mean(axis=1)
+        data["avg_old3_cashout"] = data[old3_total_outflows].mean(axis=1)
+
+        # Variation in balance (standard deviations)
+        recent_3_bal_cols = [f"m{i}_daily_avg_bal" for i in range(1, 4)]
+        all_bal_cols = [f"m{i}_daily_avg_bal" for i in range(1, 7)]
+        data["bal_std_dev_3m"] = data[recent_3_bal_cols].std(axis=1)
+        data["bal_std_dev_6m"] = data[all_bal_cols].std(axis=1)
+        data = self.dail_average_balance_tranformation(data)
 
         # 6. Log Transformation on Continuous Monetary Features
-        monetary_cols = [
-            c
-            for c in data.columns
-            if "total" in c
-            or "bal" in c
-            or "inflow" in c
-            or "outflow" in c
-            or "net" in c
-        ]
-        normalized_monetary_cols = {}
-        for col in monetary_cols:
-            if data[col].dtype in ["float64", "int64"]:
-                # data[f"{col}_log"] = np.log1p(np.maximum(0, data[col]))
-                normalized_monetary_cols[f"{col}_log"] = np.log1p(
-                    np.maximum(0, data[col])
-                )
+        # monetary_cols = [
+        #     c for c in data.columns if "total" in c or "bal" in c or "highest_amount" in c or "inflow" in c or "outflow" in c or "net" in c
+        # ]
+        # To be removed columns
+        # to_be_removed = [c for c in data.columns if "total" in c or "bal" in c or "highest_amount" in c]
+        # normalized_monetary_cols = {}
+        # for col in monetary_cols:
+        #     if data[col].dtype in ["float64", "int64"]:
+        #         # data[f"{col}_log"] = np.log1p(np.maximum(0, data[col]))
+        #         normalized_monetary_cols[f"{col}_log"] = np.log1p(np.maximum(0, data[col]))
 
+        # data.drop(columns=monetary_cols, inplace=True)
         # Convert the dictionary to a DataFrame all at once
-        new_df = pd.DataFrame(normalized_monetary_cols, index=data.index)
+        # new_df = pd.DataFrame(normalized_monetary_cols, index=data.index)
+
+        # Find any duplicates columns and remove them, but remain with the first one
+        new_df = new_df.loc[:, ~new_df.columns.duplicated(keep="first")]
 
         # Concatenate it horizontally with your original data
         data = pd.concat([data, new_df], axis=1)
-
-        # Remove transformed columns
-        # data.drop(columns=monetary_cols, inplace=True, errors="ignore")
-
-        # 7. Drop Redundant Intermediate Monthly Columns (M2, M3, M4, M5)
-        # Retain M1 (immediate boundary) and M6 (baseline boundary)
-        # intermediate_cols = []
-        # for m in [2, 3, 4, 5]:
-        #     intermediate_cols.extend(
-        #         [c for c in data.columns if c.startswith(f"m{m}_")]
-        #     )
-
-        # intermediate_cols = intermediate_cols + monetary_cols
-        # data.drop(columns=list(set(intermediate_cols)), inplace=True, errors="ignore")
 
         # 8. One-Hot Encoding
         existing_cats = [c for c in self.categorical_cols if c in data.columns]
@@ -239,9 +276,7 @@ class FeaturePipeline:
 
         return matched_cols
 
-    def transform_for_test_set(
-        self, df: pd.DataFrame
-    ) -> tuple[pd.DataFrame, pd.Series | None]:
+    def transform_for_test_set(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | None]:
         return self.transform(df, is_train=False)
 
 
@@ -289,9 +324,8 @@ class ModelPipeline:
         submission = pd.DataFrame({"ID": raw_test_df["ID"], "Target": weighed_probs})
         return weighed_probs, submission
 
-    def split_dataset(
-        self, raw_df, cross_validation=False, val_size=0.2, random_state=42
-    ):
+    def split_dataset(self, raw_df, cross_validation=False, val_size=0.2, random_state=42):
+        print(f"Submitted Dataset Shape: {raw_df.shape}, Val Size: {val_size}")
         # 1. Perform Stratified Train/Val Split on raw data
         raw_train, raw_val = train_test_split(
             raw_df,
@@ -299,9 +333,7 @@ class ModelPipeline:
             stratify=raw_df[self.target_col],
             random_state=random_state,
         )
-        print(
-            f"Dataset Split: Train = {len(raw_train)} rows, Val = {len(raw_val) if raw_val is not None else None} rows"
-        )
+        print(f"Dataset Split: Train = {len(raw_train)} rows, Val = {len(raw_val) if raw_val is not None else None} rows")
 
         # 2. Transform Train & Validation Feature Matrices
         X_train, y_train = self.feature_pipeline.transform(raw_train, is_train=True)
@@ -344,34 +376,34 @@ class ModelPipeline:
 
     def fit_lgr_model(self, X_train, y_train, random_state):
         X_train_scaled = self.scaler.fit_transform(X_train.fillna(0))
-        self.log_reg_model = LogisticRegression(
-            C=0.1, class_weight="balanced", max_iter=1000, random_state=random_state
-        )
+        self.log_reg_model = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000, random_state=random_state)
         self.log_reg_model.fit(X_train_scaled, y_train)
 
     def tune_lgbm(self, X_train, y_train, random_state=42):
         """Tunes LightGBM hyperparameters using Stratified K-Fold to balance Precision and Recall."""
         pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
 
+        # Currently best performer - Sept 2
         param_grid = {
             # 1. Direct control over positive class weight (scale down to boost precision)
             "scale_pos_weight": [
-                pos_weight * 0.5,
-                pos_weight * 0.75,
-                pos_weight,
+                # pos_weight * 0.5,
+                # pos_weight * 0.75,
+                # pos_weight,
+                2.8333333333333335
             ],
             # 2. Tree structural constraints (controls overfitting/false positives)
-            "max_depth": [5, 7, 9],
-            "num_leaves": [15, 31, 63],
-            # "min_data_in_leaf": [50, 100],
-            # "min_child_samples": [20, 50, 100],
+            "max_depth": [7],
+            # "max_depth": [6],
+            "num_leaves": [15],
+            # "min_data_in_leaf": [50],
             # 3. Regularization & Subsampling
-            # "subsample": [0.7, 0.9, 1.0],
-            # "colsample_bytree": [0.7, 0.9],
-            # "reg_alpha": [0.0, 0.1, 1.0],
-            # "reg_lambda": [0.0, 1.0, 5.0],
-            "learning_rate": [0.02, 0.05],
-            "n_estimators": [350, 400],
+            "colsample_bytree": [0.5],
+            "reg_alpha": [10],
+            "reg_lambda": [20],
+            "learning_rate": [0.05],
+            # "n_estimators": [400],
+            "n_estimators": [1000],
         }
 
         lgb = LGBMClassifier(
@@ -379,6 +411,7 @@ class ModelPipeline:
             verbosity=-1,
             device=os.environ["device"],
             n_jobs=1,
+            metric="logloss",
         )
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
@@ -405,28 +438,32 @@ class ModelPipeline:
         pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
         param_grid = {
             # "scale_pos_weight": [pos_weight * 0.5, pos_weight * 0.75, pos_weight],
-            "scale_pos_weight": [pos_weight * 0.5],
+            "scale_pos_weight": [pos_weight],
             "max_depth": [7],
-            "learning_rate": [0.02, 0.03, 0.05],
+            "learning_rate": [0.05],
+            "min_child_weight": [20],
             "objective": ["binary:logistic"],
-            "feature_fraction": [0.5, 0.7],
+            "colsample_bytree": [0.7],
+            "subsample": [0.8],
+            "reg_alpha": [10],
+            "reg_lambda": [20],
         }
 
         estimator = XGBClassifier(
             n_jobs=1,
             random_state=random_state,
             device=os.environ["device"],
-            eval_metric="logloss",
+            eval_metric="aucpr",
             early_stopping_rounds=10,
         )
 
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+        cv = StratifiedKFold(n_splits=2, shuffle=True, random_state=random_state)
 
         # Target F1 or Average Precision (PR-AUC) instead of generic accuracy
         grid = GridSearchCV(
             estimator=estimator,
             param_grid=param_grid,
-            scoring="roc_auc",  # Or 'average_precision' / 'roc_auc' / 'log_loss'
+            scoring="average_precision",  # Or 'average_precision' / 'roc_auc' / 'log_loss'
             cv=cv,
             n_jobs=4,
             verbose=1,
@@ -443,7 +480,8 @@ class ModelPipeline:
     def run_predictions(self, X_val, is_train=False, threshold: float = 0.5):
 
         # X_val_scaled = self.scaler.transform(X_val.fillna(0))
-        lgb_val_probs = self.xgb_model.predict_proba(X_val)[:, 1]
+        # lgb_val_probs = self.xgb_model.predict_proba(X_val)[:, 1]
+        lgb_val_probs = self.lgb_model.predict_proba(X_val)[:, 1]
         # cat_val_probs = self.cat_model.predict_proba(X_val)[:, 1]
         # lr_val_probs = self.log_reg_model.predict_proba(X_val_scaled)[:, 1]
 
@@ -459,7 +497,8 @@ class ModelPipeline:
 
     def fit_and_evaluate(
         self,
-        csv_path: str,
+        csv_path: str = "",
+        raw_df: pd.DataFrame = None,
         val_size: float = 0.2,
         random_state: int = 42,
         threshold: float = 0.5,
@@ -467,21 +506,21 @@ class ModelPipeline:
     ):
         """Loads dataset, performs stratified train_test_split, trains ensemble models, and prints validation metrics."""
         print(f"Reading dataset from: {csv_path}")
-        raw_df = pd.read_csv(csv_path)
-        X_train, y_train, X_val, y_val, pos_weight = self.split_dataset(
-            raw_df, val_size, random_state
-        )
+        if not csv_path and raw_df.empty:
+            raise ValueError("Either csv_path or raw_df must be provided.")
 
-        print(
-            f"Features generated: {X_train.shape[1]} columns. Imbalance Ratio:"
-            f" {pos_weight:.2f}"
-        )
+        if csv_path and raw_df is None:
+            raw_df = pd.read_csv(csv_path)
+
+        X_train, y_train, X_val, y_val, pos_weight = self.split_dataset(raw_df, val_size=val_size, random_state=random_state)
+
+        print(f"Features generated: {X_train.shape[1]} columns. Imbalance Ratio: {pos_weight:.2f}")
 
         # 3. Train LightGBM
         # self.fit_lgb(X_train, y_train, pos_weight, random_state)
 
-        # self.tune_lgbm(X_train, y_train, random_state)
-        self.tune_xgbost(X_train, y_train, X_val, y_val, random_state)
+        self.tune_lgbm(X_train, y_train, random_state)
+        # self.tune_xgbost(X_train, y_train, X_val, y_val, random_state)
         # 4. Train CatBoost
         print("--- Training CatBoost Classifier ---")
         # self.fit_cat_model(X_train, y_train, pos_weight, random_state)
@@ -502,13 +541,14 @@ class ModelPipeline:
         print("\nClassification Report:")
         print(classification_report(y_val, val_preds))
         print("====================================================\n\n")
-        train_pred, raw_train_pred = self.run_predictions(
-            X_train, is_train=True, threshold=threshold
-        )
+        train_pred, raw_train_pred = self.run_predictions(X_train, is_train=True, threshold=threshold)
         training_auc = roc_auc_score(y_train, raw_train_pred)
         print(f"Training ROC-AUC Score: {training_auc:.6f}")
         print("\nClassification Report:")
         print(classification_report(y_train, train_pred))
+        print("====================================================\n\n")
+
+        print(f"Log loss: {log_loss(y_val, raw_probs)}")
         print("====================================================\n\n")
 
         # 7. Save model pipeline
@@ -518,8 +558,8 @@ class ModelPipeline:
                 {
                     "X_train": X_train,
                     "y_train": y_train,
-                    # "X_val": X_val,
-                    # "y_val": y_val,
+                    "X_val": X_val,
+                    "y_val": y_val,
                     # "val_preds": val_preds,
                     # "raw_probs": raw_probs,
                 },
@@ -534,10 +574,10 @@ class ModelPipeline:
             version += 1
 
         num_features = len(self.fitted_columns)
-        # new_model_filename = f"model_pipeline_v{version}_f{num_features}.txt"
-        new_model_filename = f"model_pipeline_v{version}_f{num_features}.json"
-        # self.lgb_model.booster_.save_model(new_model_filename)
-        self.xgb_model.save_model(new_model_filename)
+        new_model_filename = f"model_pipeline_v{version}_f{num_features}.txt"
+        # new_model_filename = f"model_pipeline_v{version}_f{num_features}.json"
+        self.lgb_model.booster_.save_model(new_model_filename)
+        # self.xgb_model.save_model(new_model_filename)
         return self
 
     def predict_proba(self, test_df_or_path) -> np.ndarray:
