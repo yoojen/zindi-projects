@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix, log_loss, roc_auc_score
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 
@@ -125,12 +126,13 @@ class SharedNotebook:
             "max_depth": [7],
             # "max_depth": [6],
             "num_leaves": [15],
-            # "min_data_in_leaf": [50],
+            # "min_data_in_leaf": [1000],
             # 3. Regularization & Subsampling
             "colsample_bytree": [0.5],
             "reg_alpha": [10],
             "reg_lambda": [20],
             "learning_rate": [0.05],
+            "objective": ["binary"],
             # "n_estimators": [400],
             "n_estimators": [1000],
         }
@@ -141,7 +143,7 @@ class SharedNotebook:
             verbosity=-1,
             device="cpu",
             n_jobs=1,
-            metric="logloss",
+            metric="binary_logloss",
         )
 
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
@@ -163,6 +165,50 @@ class SharedNotebook:
 
         lgb_model = grid.best_estimator_
         return lgb_model
+
+    def tune_random_forest(self, X_train, y_train, pos_weigth=2.8333333333333335, random_state=42):
+        # param_grid = {
+        #     "n_estimators": [500, 1000],
+        #     "max_depth": [5, 7, 9],
+        #     "max_features": ["sqrt", "log2"],
+        #     "criterion": ["gini", "log_loss"],
+        #     "max_leaf_nodes": [300, 500, 700],
+        #     "bootstrap": [True],
+        #     "class_weight": ["balanced"],
+        #     "oob_score": [True, False],
+        # }
+        param_grid = {
+            "bootstrap": [True],
+            "class_weight": ["balanced"],
+            "criterion": ["gini"],
+            "max_depth": [9],
+            "max_features": ["sqrt"],
+            "max_leaf_nodes": [100, 300],
+            "n_estimators": [1000],
+            "oob_score": [True],
+        }
+
+        rf = RandomForestClassifier(random_state=random_state, n_jobs=1)
+
+        cv = StratifiedKFold(n_splits=2, shuffle=True, random_state=random_state)
+
+        # Target F1 or Average Precision (PR-AUC) instead of generic accuracy
+        grid = GridSearchCV(
+            estimator=rf,
+            param_grid=param_grid,
+            scoring="neg_log_loss",  # Or 'average_precision' / 'roc_auc'
+            cv=cv,
+            n_jobs=4,
+            verbose=1,
+        )
+
+        grid.fit(X_train, y_train)
+
+        print(f"Best Parameters: {grid.best_params_}")
+        print(f"Best CV Score: {grid.best_score_:.4f}")
+
+        rf_model = grid.best_estimator_
+        return rf_model
 
     @staticmethod
     def find_and_remove_mom_features(df: pd.DataFrame):
