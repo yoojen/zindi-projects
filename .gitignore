@@ -14,3 +14,4 @@ dataset_cols.json
 feature_importance_sorted.json
 ALL127COLUMNS.json
 catboost_info
+*Zone.Identifier
