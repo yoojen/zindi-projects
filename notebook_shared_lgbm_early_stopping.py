@@ -96,7 +96,7 @@ class SharedNotebook:
         # Remove volume feature
         volume_cols = [col for col in self.df_to_use.columns if "volume" in col]
         df.drop(columns=volume_cols, inplace=True)
-        print("After removing volume features: ", df.shape, "<<>>", len(volume_cols))  # len(volume_cols)
+        print("After removing volume features: ", df.shape)  # len(volume_cols)
         # Remove some features that I consider it unuseful
 
         unuseful_cols = [
@@ -112,58 +112,189 @@ class SharedNotebook:
         df.drop(columns=unuseful_cols, inplace=True)
         print("After removing unuseful features: ", df.shape)
 
-    def tune_lgbm(self, X_train, y_train, pos_weight=2.8333333333333335, random_state=42):
-        """Tunes LightGBM hyperparameters using Stratified K-Fold to balance Precision and Recall."""
-        # Currently best performer - Sept 2
+    def tune_lgbm(
+        self,
+        X_train,
+        y_train,
+        X_val=None,
+        y_val=None,
+        pos_weight=2.8333333333333335,
+        random_state=42,
+        early_stopping_rounds=100,
+        eval_log_period=50,
+    ):
+        """
+        Tune and train LightGBM with early stopping.
+
+        Parameters
+        ----------
+        X_train, y_train:
+            Training data used for hyperparameter search and final fitting.
+
+        X_val, y_val:
+            A validation set used for early stopping and for logging the
+            train/validation metrics at every boosting iteration.
+
+            If X_val/y_val are not supplied, a stratified 20% split is created
+            from X_train/y_train. For a proper experiment, it is preferable to
+            pass your existing held-out validation set explicitly.
+
+        pos_weight:
+            LightGBM scale_pos_weight for the positive class.
+
+        early_stopping_rounds:
+            Number of consecutive rounds without validation improvement before
+            training stops.
+
+        eval_log_period:
+            Print evaluation metrics every N boosting rounds.
+
+        Returns
+        -------
+        LGBMClassifier
+            The best LightGBM model found by CV and then refit with early
+            stopping. The returned model contains:
+                - best_iteration_
+                - best_score_
+                - evals_result_
+                - feature_importances_
+        """
+        from sklearn.model_selection import train_test_split
+        import lightgbm as lgb
+
+        # ---------------------------------------------------------------
+        # 1. Create/accept a validation set for early stopping
+        # ---------------------------------------------------------------
+        if X_val is None or y_val is None:
+            X_fit, X_val, y_fit, y_val = train_test_split(
+                X_train,
+                y_train,
+                test_size=0.20,
+                stratify=y_train,
+                random_state=random_state,
+            )
+            print("No validation set supplied. Created a stratified 20% validation split from X_train.")
+        else:
+            X_fit, y_fit = X_train, y_train
+
+        # ---------------------------------------------------------------
+        # 2. Hyperparameter search
+        #
+        # Keep n_estimators high enough for early stopping to determine
+        # the effective number of trees later.
+        # ---------------------------------------------------------------
         param_grid = {
-            # 1. Direct control over positive class weight (scale down to boost precision)
-            "scale_pos_weight": [
-                # pos_weight * 0.5,
-                # pos_weight * 0.75,
-                pos_weight,
-            ],
-            # 2. Tree structural constraints (controls overfitting/false positives)
+            "scale_pos_weight": [pos_weight],
             "max_depth": [7],
-            # "max_depth": [6],
             "num_leaves": [15],
-            # "min_data_in_leaf": [1000],
-            # 3. Regularization & Subsampling
             "colsample_bytree": [0.5],
             "reg_alpha": [10],
             "reg_lambda": [20],
-            "learning_rate": [0.01],
-            "objective": ["binary"],
-            # "n_estimators": [400],
-            "n_estimators": [4000],
+            "learning_rate": [0.05],
         }
 
-        lgb = LGBMClassifier(
+        base_lgbm = LGBMClassifier(
+            objective="binary",
+            n_estimators=2000,
             random_state=random_state,
             importance_type="gain",
             verbosity=-1,
             device="cpu",
             n_jobs=1,
-            metric="binary_logloss",
         )
 
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+        cv = StratifiedKFold(
+            n_splits=5,
+            shuffle=True,
+            random_state=random_state,
+        )
 
-        # Target F1 or Average Precision (PR-AUC) instead of generic accuracy
         grid = GridSearchCV(
-            estimator=lgb,
+            estimator=base_lgbm,
             param_grid=param_grid,
-            scoring="roc_auc",  # Or 'average_precision' / 'roc_auc'
+            scoring="roc_auc",
             cv=cv,
             n_jobs=4,
             verbose=1,
+            refit=False,
         )
 
-        grid.fit(X_train, y_train)
+        grid.fit(X_fit, y_fit)
 
-        print(f"Best Parameters: {grid.best_params_}")
-        print(f"Best CV Score: {grid.best_score_:.4f}")
+        print(f"Best Parameters from CV: {grid.best_params_}")
+        print(f"Best CV ROC-AUC: {grid.best_score_:.6f}")
 
-        lgb_model = grid.best_estimator_
+        # ---------------------------------------------------------------
+        # 3. Refit the best configuration with early stopping.
+        #
+        # We deliberately evaluate BOTH train and validation sets so that
+        # the overfitting trajectory is visible.
+        # ---------------------------------------------------------------
+        best_params = grid.best_params_
+
+        lgb_model = LGBMClassifier(
+            **best_params,
+            objective="binary",
+            n_estimators=2000,
+            random_state=random_state,
+            importance_type="gain",
+            verbosity=-1,
+            device="cpu",
+            n_jobs=1,
+        )
+
+        evals_result = {}
+
+        lgb_model.fit(
+            X_fit,
+            y_fit,
+            eval_X=X_val,
+            eval_y=y_val,
+            # eval_set=[
+            #     (X_fit, y_fit),
+            #     (X_val, y_val),
+            # ],
+            eval_names=["train", "valid"],
+            eval_metric=["binary_logloss"],
+            callbacks=[
+                lgb.early_stopping(
+                    stopping_rounds=early_stopping_rounds,
+                    first_metric_only=False,
+                    verbose=True,
+                ),
+                lgb.log_evaluation(period=eval_log_period),
+                lgb.record_evaluation(evals_result),
+            ],
+        )
+
+        # Keep an explicit copy on the model as well. This is useful when
+        # inspecting the notebook after training.
+        # lgb_model.evals_result_ = evals_result
+
+        # ---------------------------------------------------------------
+        # 4. Report the final train/validation metrics at the selected
+        #    early-stopping iteration.
+        # ---------------------------------------------------------------
+        train_probs = lgb_model.predict_proba(X_fit)[:, 1]
+        val_probs = lgb_model.predict_proba(X_val)[:, 1]
+
+        train_auc = roc_auc_score(y_fit, train_probs)
+        val_auc = roc_auc_score(y_val, val_probs)
+
+        train_loss = log_loss(y_fit, train_probs)
+        val_loss = log_loss(y_val, val_probs)
+
+        print("\n" + "=" * 70)
+        print("LIGHTGBM EARLY-STOPPING SUMMARY")
+        print("=" * 70)
+        print(f"Best iteration : {lgb_model.best_iteration_}")
+        print(f"Train ROC-AUC  : {train_auc:.6f}")
+        print(f"Valid ROC-AUC  : {val_auc:.6f}")
+        print(f"ROC-AUC gap    : {train_auc - val_auc:.6f}")
+        print(f"Train Log Loss : {train_loss:.6f}")
+        print(f"Valid Log Loss : {val_loss:.6f}")
+        print("=" * 70)
+
         return lgb_model
 
     def tune_random_forest(self, X_train, y_train, pos_weigth=2.8333333333333335, random_state=42):
@@ -255,9 +386,16 @@ class SharedNotebook:
     def run_predictions(model, X_train, X_val, y_train, y_val):
         train_m_preds = model.predict_proba(X_train)[:, 1]  # type: ignore
         val_m_preds = model.predict_proba(X_val)[:, 1]  # type: ignore
-        print("Train ROC: ", roc_auc_score(y_train, train_m_preds))
-        print("Val ROC: ", roc_auc_score(y_val, val_m_preds))
-        print("Val Log Loss: ", log_loss(y_val, val_m_preds))
+        train_auc = roc_auc_score(y_train, train_m_preds)
+        val_auc = roc_auc_score(y_val, val_m_preds)
+        train_loss = log_loss(y_train, train_m_preds)
+        val_loss = log_loss(y_val, val_m_preds)
+
+        print(f"Train ROC-AUC : {train_auc:.6f}")
+        print(f"Val ROC-AUC   : {val_auc:.6f}")
+        print(f"ROC-AUC gap   : {train_auc - val_auc:.6f}")
+        print(f"Train Log Loss: {train_loss:.6f}")
+        print(f"Val Log Loss  : {val_loss:.6f}")
 
         return train_m_preds, val_m_preds
 
@@ -291,11 +429,3 @@ class SharedNotebook:
         print("Submission file saved!")
 
         return submission
-
-    @staticmethod
-    def save_model(model, model_name: str):
-        filename = f"{model_name}.pkl"
-        import pickle
-
-        with open(filename, "wb") as f:
-            pickle.dump(model, f)

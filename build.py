@@ -69,23 +69,7 @@ class FeaturePipeline:
         months = ["m1", "m2", "m3", "m4", "m5", "m6"]
         return [f"{m}_daily_avg_bal" for m in months]
 
-    def bal_avg_mom_calculations(self, df: pd.DataFrame):
-        months = ["m1", "m2", "m3", "m4", "m5", "m6"]
-
-        # Example using Daily Average Balance
-        avg_diff_dict = {}
-        for i in range(len(months) - 1):
-            current = f"{months[i]}_daily_avg_bal"
-            previous = f"{months[i + 1]}_daily_avg_bal"
-
-            # 1. Create Raw Difference Feature (Do not overwrite anything)
-            avg_diff_dict[f"{months[i]}_{months[i + 1]}_bal_diff_raw"] = df[current] - df[previous]
-
-            # 2. Create Safe Percentage Difference (Add a +1 stabilizer to prevent 0 division)
-            # This prevents division-by-zero errors when accounts hit zero balances
-            avg_diff_dict[f"{months[i]}_{months[i + 1]}_bal_diff_pct"] = (df[current] - df[previous]) / (df[previous] + 1)
-
-        return pd.DataFrame(avg_diff_dict)
+    # def transform_bills_features(self)
 
     def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
@@ -143,8 +127,13 @@ class FeaturePipeline:
         # Leave recent months in dataframe, aggregates, and remove old months
         recent3_months = [f"m{i}_daily_avg_bal" for i in range(1, 4)]
         old3_months = [f"m{i}_daily_avg_bal" for i in range(4, 7)]
+        all_bal_cols = [f"m{i}_daily_avg_bal" for i in range(1, 7)]
         df["recent3_avg_balance"] = df[recent3_months].mean(axis=1)
         df["old3_avg_balance"] = df[old3_months].mean(axis=1)
+
+        # Variation in balance using coefficient of variance
+        df["bal_cv_3m"] = df[recent3_months].std(axis=1) / df[recent3_months].mean(axis=1)
+        df["bal_cv_6m"] = df[all_bal_cols].std(axis=1) / df[all_bal_cols].mean(axis=1)
 
         # Remove old months
         df = df.drop(columns=old3_months)
@@ -181,6 +170,8 @@ class FeaturePipeline:
 
         # 3. Convert all new columns at once and join them horizontally
         new_df = pd.DataFrame(new_features, index=data.index)
+        # Find any duplicates columns and remove them, but remain with the first one
+        new_df = new_df.loc[:, ~new_df.columns.duplicated(keep="first")]
         data = pd.concat([data, new_df], axis=1)
 
         # 3. 3-Month Window Median Aggregations
@@ -189,15 +180,19 @@ class FeaturePipeline:
         m1_3_outflow = [f"m{i}_total_outflow" for i in range(1, 4)]
         m4_6_outflow = [f"m{i}_total_outflow" for i in range(4, 7)]
 
-        data["inflow_median_recent_3m"] = data[m1_3_inflow].median(axis=1)
-        data["inflow_median_baseline_3m"] = data[m4_6_inflow].median(axis=1)
-        data["outflow_median_recent_3m"] = data[m1_3_outflow].median(axis=1)
-        data["outflow_median_baseline_3m"] = data[m4_6_outflow].median(axis=1)
+        data["inflow_avg_recent_3m"] = data[m1_3_inflow].mean(axis=1)
+        data["inflow_avg_baseline_3m"] = data[m4_6_inflow].mean(axis=1)
+        data["outflow_avg_recent_3m"] = data[m1_3_outflow].mean(axis=1)
+        data["outflow_avg_baseline_3m"] = data[m4_6_outflow].mean(axis=1)
 
         # 3M Flow Dynamics / Ratios
-        data["inflow_drift_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (data["inflow_median_baseline_3m"] + epsilon)
-        data["outflow_drift_3m"] = (data["outflow_median_recent_3m"] + epsilon) / (data["outflow_median_baseline_3m"] + epsilon)
-        data["net_coverage_recent_3m"] = (data["inflow_median_recent_3m"] + epsilon) / (data["outflow_median_recent_3m"] + epsilon)
+        data["inflow_drift_3m"] = (data["inflow_avg_recent_3m"] + epsilon) / (data["inflow_avg_baseline_3m"] + epsilon)
+        data["outflow_drift_3m"] = (data["outflow_avg_recent_3m"] + epsilon) / (
+            data["outflow_avg_baseline_3m"] + epsilon
+        )
+        data["net_coverage_recent_3m"] = (data["inflow_avg_recent_3m"] + epsilon) / (
+            data["outflow_avg_recent_3m"] + epsilon
+        )
 
         # 4. Slopes (3m and 6m Trajectories)
         data["bal_slope_6m"] = self._compute_slopes(data, "daily_avg_bal", months=6)
@@ -213,36 +208,19 @@ class FeaturePipeline:
             data["m1_cashout_intensity"] = data["m1_total_outflow"] / (data["m1_daily_avg_bal"] + epsilon)
 
         # Last three months cashout intensity
-        recent3_total_outflow = [f"m{i}_total_outflow" for i in range(1, 4)]
-        old3_total_outflows = [f"m{i}_total_outflow" for i in range(4, 7)]
-        data["avg_recent3_cashout"] = data[recent3_total_outflow].mean(axis=1)
-        data["avg_old3_cashout"] = data[old3_total_outflows].mean(axis=1)
+        data["avg_recent3_cashout"] = data[m1_3_outflow].mean(axis=1)
+        data["avg_old3_cashout"] = data[m4_6_outflow].mean(axis=1)
 
-        # Variation in balance (standard deviations)
-        recent_3_bal_cols = [f"m{i}_daily_avg_bal" for i in range(1, 4)]
-        all_bal_cols = [f"m{i}_daily_avg_bal" for i in range(1, 7)]
-        data["bal_std_dev_3m"] = data[recent_3_bal_cols].std(axis=1)
-        data["bal_std_dev_6m"] = data[all_bal_cols].std(axis=1)
+        # Variation in inflows using coefficient of variance
+        data["inflow_cv_3m"] = data[m1_3_inflow].std(axis=1) / data[m1_3_inflow].mean(axis=1)
+        data["inflow_cv_6m"] = data[m4_6_inflow].std(axis=1) / data[m4_6_inflow].mean(axis=1)
+
+        # Variation in outflows using coefficient of variance
+        data["outflow_cv_3m"] = data[m1_3_outflow].std(axis=1) / data[m1_3_outflow].mean(axis=1)
+        data["outflow_cv_6m"] = data[m4_6_outflow].std(axis=1) / data[m4_6_outflow].mean(axis=1)
+
+        # Run this modification afterall because it removes old 3 months
         data = self.dail_average_balance_tranformation(data)
-
-        # 6. Log Transformation on Continuous Monetary Features
-        # monetary_cols = [
-        #     c for c in data.columns if "total" in c or "bal" in c or "highest_amount" in c or "inflow" in c or "outflow" in c or "net" in c
-        # ]
-        # To be removed columns
-        # to_be_removed = [c for c in data.columns if "total" in c or "bal" in c or "highest_amount" in c]
-        # normalized_monetary_cols = {}
-        # for col in monetary_cols:
-        #     if data[col].dtype in ["float64", "int64"]:
-        #         # data[f"{col}_log"] = np.log1p(np.maximum(0, data[col]))
-        #         normalized_monetary_cols[f"{col}_log"] = np.log1p(np.maximum(0, data[col]))
-
-        # data.drop(columns=monetary_cols, inplace=True)
-        # Convert the dictionary to a DataFrame all at once
-        # new_df = pd.DataFrame(normalized_monetary_cols, index=data.index)
-
-        # Find any duplicates columns and remove them, but remain with the first one
-        new_df = new_df.loc[:, ~new_df.columns.duplicated(keep="first")]
 
         # Concatenate it horizontally with your original data
         data = pd.concat([data, new_df], axis=1)
@@ -333,7 +311,9 @@ class ModelPipeline:
             stratify=raw_df[self.target_col],
             random_state=random_state,
         )
-        print(f"Dataset Split: Train = {len(raw_train)} rows, Val = {len(raw_val) if raw_val is not None else None} rows")
+        print(
+            f"Dataset Split: Train = {len(raw_train)} rows, Val = {len(raw_val) if raw_val is not None else None} rows"
+        )
 
         # 2. Transform Train & Validation Feature Matrices
         X_train, y_train = self.feature_pipeline.transform(raw_train, is_train=True)
@@ -376,7 +356,9 @@ class ModelPipeline:
 
     def fit_lgr_model(self, X_train, y_train, random_state):
         X_train_scaled = self.scaler.fit_transform(X_train.fillna(0))
-        self.log_reg_model = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000, random_state=random_state)
+        self.log_reg_model = LogisticRegression(
+            C=0.1, class_weight="balanced", max_iter=1000, random_state=random_state
+        )
         self.log_reg_model.fit(X_train_scaled, y_train)
 
     def tune_lgbm(self, X_train, y_train, random_state=42):
@@ -512,7 +494,9 @@ class ModelPipeline:
         if csv_path and raw_df is None:
             raw_df = pd.read_csv(csv_path)
 
-        X_train, y_train, X_val, y_val, pos_weight = self.split_dataset(raw_df, val_size=val_size, random_state=random_state)
+        X_train, y_train, X_val, y_val, pos_weight = self.split_dataset(
+            raw_df, val_size=val_size, random_state=random_state
+        )
 
         print(f"Features generated: {X_train.shape[1]} columns. Imbalance Ratio: {pos_weight:.2f}")
 

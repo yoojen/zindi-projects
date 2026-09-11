@@ -1,0 +1,11 @@
+catboost==1.2.10
+dotenv==0.9.9
+ipython_pygments_lexers==1.1.1
+jupyter_core==5.9.1
+jupyterlab_widgets==3.0.17
+optuna==4.9.0
+pip-chill==1.0.5
+pure_eval==0.2.3
+stack-data==0.6.3
+widgetsnbextension==4.0.16
+xgboost==3.4.1
