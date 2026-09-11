@@ -107,6 +107,64 @@ class FeaturePipeline:
 
         # return df
 
+    def transform_agent_features(self, df):
+        # Deposit agents calculations
+        recent3_deposit = [f"m{i}_deposit_agents" for i in range(1, 4)]
+        old3_deposit = [f"m{i}_deposit_agents" for i in range(4, 7)]
+        all_deposit = [f"m{i}_deposit_agents" for i in range(1, 7)]
+
+        recent3_deposit_high_amount = [f"m{i}_deposit_highest_amount" for i in range(1, 4)]
+        old3_deposit_high_amount = [f"m{i}_deposit_highest_amount" for i in range(4, 7)]
+        all_deposit_high_amount = [f"m{i}_deposit_highest_amount" for i in range(1, 7)]
+
+        df["deposit_agents_hghamt_3mrecent"] = df[recent3_deposit_high_amount].mean(axis=1)
+        df["deposit_agents_hghamt_6m"] = df[old3_deposit_high_amount].mean(axis=1)
+        df["deposit_agents_hghmt_all"] = df[all_deposit_high_amount].mean(axis=1)
+
+        # Their coeffience of covarience
+        df["deposit_agents_cv_3mrecent"] = df[recent3_deposit].std(axis=1) / df[recent3_deposit].mean(axis=1)
+        df["deposit_agents_cv_3mold"] = df[old3_deposit].std(axis=1) / df[old3_deposit].mean(axis=1)
+        df["deposit_agents_cv_6m"] = df[all_deposit].std(axis=1) / df[all_deposit].mean(axis=1)
+        # df["deposit_agents_6total"] = df[all_deposit].sum(axis=1)
+
+        # Ratio calculations
+        df["recent3_deposit_agents_ratio"] = df[recent3_deposit].sum(axis=1) / df[all_deposit].sum(axis=1)
+        df["old3_deposit_agents_ratio"] = df[old3_deposit].sum(axis=1) / df[all_deposit].sum(axis=1)
+
+        # Drop all used raw features (without removing them model was slightly better than others)
+        df.drop(columns=all_deposit, inplace=True)
+
+        # Withdrawal agents calculations
+        recent3_withdrawal = [f"m{i}_withdraw_agents" for i in range(1, 4)]
+        old3_withdrawal = [f"m{i}_withdraw_agents" for i in range(4, 7)]
+        all_withdrawal = [f"m{i}_withdraw_agents" for i in range(1, 7)]
+
+        recent3_withdraw_high_amount = [f"m{i}_withdraw_highest_amount" for i in range(1, 4)]
+        old3_withdraw_high_amount = [f"m{i}_withdraw_highest_amount" for i in range(4, 7)]
+        all_withdraw_high_amount = [f"m{i}_withdraw_highest_amount" for i in range(1, 7)]
+
+        df["withdraw_agents_hghamt_3mrecent"] = df[recent3_withdraw_high_amount].mean(axis=1)
+        df["withdraw_agents_hghamt_6m"] = df[old3_withdraw_high_amount].mean(axis=1)
+        df["withdraw_agents_hghmt_all"] = df[all_withdraw_high_amount].mean(axis=1)
+
+        # Their coeffience of covarience
+        df["withdrawal_agents_cv_3mrecent"] = df[recent3_withdrawal].std(axis=1) / df[recent3_withdrawal].mean(axis=1)
+        df["withdrawal_agents_cv_3mold"] = df[old3_withdrawal].std(axis=1) / df[old3_withdrawal].mean(axis=1)
+        df["withdrawal_agents_cv_6m"] = df[all_withdrawal].std(axis=1) / df[all_withdrawal].mean(axis=1)
+        # df["withdrawal_agents_6total"] = df[all_withdrawal].sum(axis=1)
+
+        # Ratio calculations
+        df["recent3_withdraw_agents_ratio"] = df[recent3_withdrawal].sum(axis=1) / df[all_withdrawal].sum(axis=1)
+        df["old3_withdraw_agents_ratio"] = df[old3_withdrawal].sum(axis=1) / df[all_withdrawal].sum(axis=1)
+
+        # Highest amount covariance calculations only
+        df["withdrawal_agents_cv_3mrecent"] = df[recent3_withdrawal].std(axis=1) / df[recent3_withdrawal].mean(axis=1)
+        df["withdrawal_agents_cv_3mold"] = df[old3_withdrawal].std(axis=1) / df[old3_withdrawal].mean(axis=1)
+        df["withdrawal_agents_cv_6m"] = df[all_withdrawal].std(axis=1) / df[all_withdrawal].mean(axis=1)
+
+        # Drop all used raw features (without removing them model was slightly better than others)
+        df.drop(columns=all_withdrawal, inplace=True)
+
     def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
         matched_cols = [col for col in df.columns if re.search(regex, col)]
@@ -257,6 +315,7 @@ class FeaturePipeline:
 
         # Do some aggregation on bills cols
         self.transform_bills_features(data)
+        self.transform_agent_features(data)
         # Run this modification afterall because it removes old 3 months
         data = self.dail_average_balance_tranformation(data)
 
