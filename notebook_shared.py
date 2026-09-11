@@ -106,7 +106,7 @@ class SharedNotebook:
             or "senders" in col
             or "recipients" in col
             or "merchants" in col
-            or "companies" in col
+            # or "companies" in col
             or "bank_banks" in col
         ]
         df.drop(columns=unuseful_cols, inplace=True)
@@ -134,7 +134,7 @@ class SharedNotebook:
             "learning_rate": [0.01],
             "objective": ["binary"],
             # "n_estimators": [400],
-            "n_estimators": [4000],
+            "n_estimators": [3000],
         }
 
         lgb = LGBMClassifier(
