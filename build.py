@@ -72,7 +72,17 @@ class FeaturePipeline:
     def transform_bills_features(self, df):
         recent3_paybills = [f"m{i}_paybill_total_value" for i in range(1, 4)]
         old3_paybills = [f"m{i}_paybill_total_value" for i in range(4, 7)]
-        all_paybills = [f"m{i}_paybill_total_value" for i in range(1, 7)]
+        all_paybills = recent3_paybills + old3_paybills
+
+        # recent3_paybill_high_amount = [f"m{i}_paybill_highest_amount" for i in range(1, 4)]
+        old3_paybill_high_amount = [f"m{i}_paybill_highest_amount" for i in range(4, 7)]
+        # all_paybill_high_amount = recent3_paybill_high_amount + old3_paybill_high_amount
+
+        # df["paybill_hghamt_3mrecent"] = df[recent3_paybill_high_amount].mean(axis=1)
+        df["paybill_hghamt_3m"] = df[old3_paybill_high_amount].mean(axis=1)
+        # df["paybill_hghamt_6m"] = df[all_paybill_high_amount].mean(axis=1)
+        # df['paybill_max'] = df[all_paybill_high_amount].max(axis=1)
+        # df['paybill_min'] = df[all_paybill_high_amount].min(axis=1)
 
         # Calculate coefficient of variance
         df["paybill_cv_3mrecent"] = df[recent3_paybills].std(axis=1) / df[recent3_paybills].mean(axis=1)
@@ -94,6 +104,9 @@ class FeaturePipeline:
         all_volume = [f"m{i}_paybill_companies" for i in range(1, 7)]
         df["paybill_vol_3mrecent"] = df[recent3_volume].mean(axis=1)
         df["paybill_vol_6m"] = df[old3_volume].mean(axis=1)
+        # df["paybill_vol_max"] = df[all_volume].max(axis=1)
+        # df["paybill_vol_min"] = df[all_volume].min(axis=1)
+
         # Their coeffience of covarience
         df["paybill_cv_3mrecent"] = df[recent3_volume].std(axis=1) / df[recent3_volume].mean(axis=1)
         df["paybill_cv_3mold"] = df[old3_volume].std(axis=1) / df[old3_volume].mean(axis=1)
@@ -102,6 +115,7 @@ class FeaturePipeline:
         # Drop all used raw features (without removing them model was slightly better than others)
         df.drop(columns=all_paybills, inplace=True)
         df.drop(columns=all_volume, inplace=True)
+        df.drop(columns=old3_paybill_high_amount, inplace=True)
 
         # df = df.drop(columns=old3_paybills)
 
