@@ -102,8 +102,8 @@ class SharedNotebook:
         unuseful_cols = [
             col
             for col in self.df_to_use.columns.to_list()
-            if "agent" in col
-            or "senders" in col
+            # if "agents" in col
+            if "senders" in col
             or "recipients" in col
             or "merchants" in col
             # or "companies" in col
