@@ -1,0 +1,18 @@
+[
+    "m6_transfer_from_bank_highest_amount",
+    "m4_paybill_highest_amount",
+    "m3_merchantpay_highest_amount",
+    "m3_mm_send_total_value",
+    "m6_transfer_from_bank_total_value",
+    "m1_merchantpay_highest_amount",
+    "m4_deposit_highest_amount",
+    "m2_merchantpay_total_value",
+    "m4_received_highest_amount",
+    "m5_transfer_from_bank_highest_amount",
+    "m2_merchantpay_highest_amount",
+    "m2_received_highest_amount",
+    "m6_mm_send_highest_amount",
+    "m2_transfer_from_bank_highest_amount",
+    "m1_merchantpay_total_value",
+    "m6_received_total_value_mom"
+]

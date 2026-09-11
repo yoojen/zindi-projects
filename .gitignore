@@ -2,7 +2,7 @@ ml_kernel
 /**/*/__pycache__
 /**/*.pyc
 /**/*.pkl
-/**/*.json
+# /**/*.json
 /**/*.tsv
 /**/*.tfevents
 /**/*.csv
@@ -10,3 +10,7 @@ model_pipeline*
 training_metrics*
 .ipynb_checkpoints
 lgb_model*
+dataset_cols.json
+feature_importance_sorted.json
+ALL127COLUMNS.json
+catboost_info
