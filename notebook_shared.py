@@ -228,14 +228,14 @@ class SharedNotebook:
         with open("A_non_performing_features2.json", "r") as f:
             non_performing_features2 = json.load(f)
 
-        X_train.drop(columns=non_performing_features, inplace=True)
-        if X_val is not None:
-            X_val.drop(columns=non_performing_features, inplace=True)
+        # X_train.drop(columns=non_performing_features, inplace=True)
+        # if X_val is not None:
+        #     X_val.drop(columns=non_performing_features, inplace=True)
 
         # Remvoe the version2 which were based on the cummulative and relative gain
-        X_train.drop(columns=non_performing_features2, inplace=True)
-        if X_val is not None:
-            X_val.drop(columns=non_performing_features2, inplace=True)
+        # X_train.drop(columns=non_performing_features2, inplace=True)
+        # if X_val is not None:
+        #     X_val.drop(columns=non_performing_features2, inplace=True)
 
     def remove_netflow_features(self, X_train: pd.DataFrame, X_val: pd.DataFrame | None):
         # Remove some features and see how model performs (Removing these columns improved the ROC and LOG LOSS)

@@ -133,6 +133,7 @@ class FeaturePipeline:
 
         # Drop all used raw features (without removing them model was slightly better than others)
         df.drop(columns=all_deposit, inplace=True)
+        df.drop(columns=all_deposit_high_amount, inplace=True)
 
         # Withdrawal agents calculations
         recent3_withdrawal = [f"m{i}_withdraw_agents" for i in range(1, 4)]
@@ -164,6 +165,7 @@ class FeaturePipeline:
 
         # Drop all used raw features (without removing them model was slightly better than others)
         df.drop(columns=all_withdrawal, inplace=True)
+        df.drop(columns=all_withdraw_high_amount, inplace=True)
 
     def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
