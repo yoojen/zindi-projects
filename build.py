@@ -69,13 +69,49 @@ class FeaturePipeline:
         months = ["m1", "m2", "m3", "m4", "m5", "m6"]
         return [f"{m}_daily_avg_bal" for m in months]
 
-    # def transform_bills_features(self)
+    def transform_bills_features(self, df):
+        recent3_paybills = [f"m{i}_paybill_total_value" for i in range(1, 4)]
+        old3_paybills = [f"m{i}_paybill_total_value" for i in range(4, 7)]
+        all_paybills = [f"m{i}_paybill_total_value" for i in range(1, 7)]
+
+        # Calculate coefficient of variance
+        df["paybill_cv_3mrecent"] = df[recent3_paybills].std(axis=1) / df[recent3_paybills].mean(axis=1)
+        df["paybill_cv_3mold"] = df[old3_paybills].std(axis=1) / df[old3_paybills].mean(axis=1)
+        df["paybill_cv_6m"] = df[all_paybills].std(axis=1) / df[all_paybills].mean(axis=1)
+
+        # Central tendency by median
+        df["paybill_median_3mrecent"] = df[recent3_paybills].median(axis=1)
+        df["paybill_median_6m"] = df[all_paybills].median(axis=1)
+
+        # Paybill Volume calculations
+        # Mean of recent 3 months and Mean of all 6 months
+        df["paybill_vol_3mrecent"] = df[recent3_paybills].mean(axis=1)
+        df["paybill_vol_6m"] = df[all_paybills].mean(axis=1)
+
+        # Company Paybill Volume calculations vs total paybill volume and total amount spent on bill (total value)
+        recent3_volume = [f"m{i}_paybill_companies" for i in range(1, 4)]
+        old3_volume = [f"m{i}_paybill_companies" for i in range(4, 7)]
+        all_volume = [f"m{i}_paybill_companies" for i in range(1, 7)]
+        df["paybill_vol_3mrecent"] = df[recent3_volume].mean(axis=1)
+        df["paybill_vol_6m"] = df[old3_volume].mean(axis=1)
+        # Their coeffience of covarience
+        df["paybill_cv_3mrecent"] = df[recent3_volume].std(axis=1) / df[recent3_volume].mean(axis=1)
+        df["paybill_cv_3mold"] = df[old3_volume].std(axis=1) / df[old3_volume].mean(axis=1)
+        df["paybill_cv_6m"] = df[all_volume].std(axis=1) / df[all_volume].mean(axis=1)
+
+        # Drop all used raw features (without removing them model was slightly better than others)
+        df.drop(columns=all_paybills, inplace=True)
+        df.drop(columns=all_volume, inplace=True)
+
+        # df = df.drop(columns=old3_paybills)
+
+        # return df
 
     def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
         matched_cols = [col for col in df.columns if re.search(regex, col)]
         new_df_dict = {}
-        print(matched_cols)
+
         for col in matched_cols:
             month = col[1]
             if int(month) == 6:
@@ -219,6 +255,8 @@ class FeaturePipeline:
         data["outflow_cv_3m"] = data[m1_3_outflow].std(axis=1) / data[m1_3_outflow].mean(axis=1)
         data["outflow_cv_6m"] = data[m4_6_outflow].std(axis=1) / data[m4_6_outflow].mean(axis=1)
 
+        # Do some aggregation on bills cols
+        self.transform_bills_features(data)
         # Run this modification afterall because it removes old 3 months
         data = self.dail_average_balance_tranformation(data)
 
