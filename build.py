@@ -248,6 +248,74 @@ class FeaturePipeline:
 
         return df
 
+    def transform_mm_send_features(self, df: pd.DataFrame):
+        # This is engineering is going to focus on range, max, min, and mean
+        # Because I believe that differences can show what user is facing than variations
+        mm_send_tot_value_recent3 = [f"m{i}_mm_send_total_value" for i in range(1, 4)]
+        mm_send_tot_value_old3 = [f"m{i}_mm_send_total_value" for i in range(4, 7)]
+        mm_send_tot_value_all = mm_send_tot_value_recent3 + mm_send_tot_value_old3
+        mm_send_high_amount_recent3 = [f"m{i}_mm_send_highest_amount" for i in range(1, 4)]
+        mm_send_high_amount_old3 = [f"m{i}_mm_send_highest_amount" for i in range(4, 7)]
+        mm_send_high_amount_all = mm_send_high_amount_recent3 + mm_send_high_amount_old3
+        mm_send_volume_recent3 = [f"m{i}_mm_send_volume" for i in range(1, 4)]
+        mm_send_volume_old3 = [f"m{i}_mm_send_volume" for i in range(4, 7)]
+        mm_send_volume_all = mm_send_volume_recent3 + mm_send_volume_old3
+
+        running_df = pd.DataFrame()
+        # Volatility
+        running_df["mm_send_cv"] = df[mm_send_tot_value_all].std(axis=1) / df[mm_send_tot_value_all].mean(axis=1)
+        running_df["max_min_ratio"] = df[mm_send_tot_value_all].max(axis=1) / df[mm_send_tot_value_all].min(axis=1)
+        running_df["mmsend_3m_velocity"] = df[mm_send_tot_value_old3].mean(axis=1) / df[mm_send_tot_value_recent3].mean(
+            axis=1
+        )
+        old_5months = [f"m{i}_mm_send_total_value" for i in reversed(range(2, 7))]
+        running_df["historical_avg"] = df[old_5months] / df["m1_mm_send_total_value"]
+        running_df["historical_z_score"] = (df["m1_mm_send_total_value"] - df[old_5months].mean(axis=1)) / df[
+            old_5months
+        ].std(axis=1)
+
+        def find_monthovermonth(df: pd.DataFrame):
+            new_df = pd.DataFrame()
+            cols_copy = df.columns.to_list().copy()
+            cols_copy.sort()
+
+            for col in cols_copy:
+                col_month = int(col[1])
+                next_col = col_month + 1
+                diff = df[col] - df[f"m{next_col}_{col[3:]}"]
+                if next_col > 3:
+                    new_df["m3_mm_send_tot_mom"] = diff
+                    break
+                else:
+                    new_df[f"m{col_month}_mm_send_tot_mom"] = diff
+
+            return new_df
+
+        mom_recent3 = find_monthovermonth(df[[f"m{i}_mm_send_total_value" for i in range(1, 5)]])
+        running_df[["m1_mm_send_tot_mom", "m2_mm_send_tot_mom", "m3_mm_send_tot_mom"]] = mom_recent3
+
+        # Rename last_3months_month_over_month columns and add to running_df
+        # last_3months_month_over_month.columns = [f"m{i}_mm_send_tot_mom" for i in range(4, 7)]
+        # running_df = pd.concat([running_df, last_3months_month_over_month], axis=1)
+
+        running_df["send_highamt_max_min_ratio"] = df[mm_send_high_amount_all].max(axis=1) / df[
+            mm_send_high_amount_all
+        ].min(axis=1)
+        # running_df["send_highamt_max"] = df[mm_send_high_amount_all].max(axis=1)
+        running_df["send_highamt_mean"] = df[mm_send_high_amount_all].median(axis=1)
+        running_df["send_vol_mean"] = df[mm_send_volume_all].mean(axis=1)
+
+        # try to understand the proportion of money send based on the money recieved
+        # Drop all used raw features (without removing them model was slightly better than others)
+        df.drop(columns=mm_send_tot_value_all, inplace=True)
+        df.drop(columns=mm_send_high_amount_all, inplace=True)
+        df.drop(columns=mm_send_volume_all, inplace=True)
+
+        # Join two dfs
+        df = pd.concat([df, running_df], axis=1)
+
+        return df
+
     def month_over_month_calculation(self, field_suffix: str, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         regex = rf"^m\d+_[a-zA-Z0-9]+_({field_suffix})$"
         matched_cols = [col for col in df.columns if re.search(regex, col)]
@@ -381,6 +449,7 @@ class FeaturePipeline:
         data = self.transform_bills_features(data)
         data = self.transform_agent_features(data)
         data = self.transform_merchant_features(data)
+        data = self.transform_mm_send_features(data)
         # Run this modification afterall because it removes old 3 months
         data = self.dail_average_balance_tranformation(data)
 
