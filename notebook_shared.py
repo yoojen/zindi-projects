@@ -115,7 +115,7 @@ class SharedNotebook:
     def tune_lgbm(self, X_train, y_train, pos_weight=2.8333333333333335, random_state=42):
         """Tunes LightGBM hyperparameters using Stratified K-Fold to balance Precision and Recall."""
         print(X_train.shape, y_train.shape)
-        # Currently best performer - Sept 2
+        # Currently best performer - Sept 14
         param_grid = {
             # 1. Direct control over positive class weight (scale down to boost precision)
             "scale_pos_weight": [
