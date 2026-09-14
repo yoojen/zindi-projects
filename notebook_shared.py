@@ -94,9 +94,9 @@ class SharedNotebook:
         """Removes features that I consider it unuseful. It use self.train_df to get the columns,
         but remove the defined columns from the submitted dataframe"""
         # Remove volume feature
-        volume_cols = [col for col in self.df_to_use.columns if "volume" in col]
-        df.drop(columns=volume_cols, inplace=True)
-        print("After removing volume features: ", df.shape, "<<>>", len(volume_cols))  # len(volume_cols)
+        # volume_cols = [col for col in self.df_to_use.columns if "volume" in col]
+        # df.drop(columns=volume_cols, inplace=True)
+        # print("After removing volume features: ", df.shape, "<<>>", len(volume_cols))  # len(volume_cols)
         # Remove some features that I consider it unuseful
 
         unuseful_cols = [
@@ -105,7 +105,7 @@ class SharedNotebook:
             # if "agents" in col
             if "senders" in col
             or "recipients" in col
-            or "merchants" in col
+            # or "merchants" in col
             # or "companies" in col
             or "bank_banks" in col
         ]
@@ -114,6 +114,7 @@ class SharedNotebook:
 
     def tune_lgbm(self, X_train, y_train, pos_weight=2.8333333333333335, random_state=42):
         """Tunes LightGBM hyperparameters using Stratified K-Fold to balance Precision and Recall."""
+        print(X_train.shape, y_train.shape)
         # Currently best performer - Sept 2
         param_grid = {
             # 1. Direct control over positive class weight (scale down to boost precision)
@@ -228,9 +229,9 @@ class SharedNotebook:
         with open("A_non_performing_features2.json", "r") as f:
             non_performing_features2 = json.load(f)
 
-        # X_train.drop(columns=non_performing_features, inplace=True)
-        # if X_val is not None:
-        #     X_val.drop(columns=non_performing_features, inplace=True)
+        X_train.drop(columns=non_performing_features, inplace=True)
+        if X_val is not None:
+            X_val.drop(columns=non_performing_features, inplace=True)
 
         # Remvoe the version2 which were based on the cummulative and relative gain
         # X_train.drop(columns=non_performing_features2, inplace=True)
