@@ -104,10 +104,10 @@ class SharedNotebook:
             for col in self.df_to_use.columns.to_list()
             # if "agents" in col
             if "senders" in col
-            or "recipients" in col
+            # or "recipients" in col
             # or "merchants" in col
             # or "companies" in col
-            or "bank_banks" in col
+            # or "bank_banks" in col
         ]
         df.drop(columns=unuseful_cols, inplace=True)
         print("After removing unuseful features: ", df.shape)

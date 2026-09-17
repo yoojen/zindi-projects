@@ -58,6 +58,32 @@ class FeaturePipeline:
     def x_var_3m(self):
         return 2.0
 
+    def _safe_div(self, numerator, denominator, fill: float = 0.0):
+        """Safely divide two array-like objects elementwise returning `fill` where denominator==0.
+
+        Works with pandas Series or numpy arrays.
+        """
+        num = np.asarray(numerator)
+        den = np.asarray(denominator)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            res = np.where(den == 0, fill, num / den)
+        return res
+
+    def _concat_columns(self, left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+        """Concatenate two DataFrames horizontally while ensuring index alignment.
+
+        If `right` does not share the same index as `left`, this will reindex
+        `right` to `left.index` to avoid expanding the row union unexpectedly.
+        """
+        if not right.index.equals(left.index):
+            # If lengths match but index labels differ, align by position
+            if len(right) == len(left):
+                right.index = left.index
+            else:
+                # Reindex to left.index (will introduce NaNs where missing)
+                right = right.reindex(left.index)
+        return pd.concat([left, right], axis=1)
+
     def _compute_slopes(self, df: pd.DataFrame, prefix: str, months: int = 6) -> np.ndarray:
         """Calculates linear slopes across M6->M1 or M3->M1."""
         cols = [f"m{i}_{prefix}" for i in range(months, 0, -1)]
@@ -87,9 +113,13 @@ class FeaturePipeline:
         running_df["merchant_hghamt_6m"] = df[all_merchant_high_amount].mean(axis=1)
 
         # Calculate coefficient of variance
-        running_df["merchant_cv_3mrecent"] = df[recent3_merchants].std(axis=1) / df[recent3_merchants].mean(axis=1)
-        running_df["merchant_cv_3mold"] = df[old3_merchants].std(axis=1) / df[old3_merchants].mean(axis=1)
-        running_df["merchant_cv_6m"] = df[all_merchants].std(axis=1) / df[all_merchants].mean(axis=1)
+        running_df["merchant_cv_3mrecent"] = self._safe_div(
+            df[recent3_merchants].std(axis=1), df[recent3_merchants].mean(axis=1)
+        )
+        running_df["merchant_cv_3mold"] = self._safe_div(
+            df[old3_merchants].std(axis=1), df[old3_merchants].mean(axis=1)
+        )
+        running_df["merchant_cv_6m"] = self._safe_div(df[all_merchants].std(axis=1), df[all_merchants].mean(axis=1))
 
         # merchant Volume calculations
         # Mean of recent 3 months and Mean of all 6 months
@@ -114,7 +144,7 @@ class FeaturePipeline:
         # df.drop(columns=unique_marchent, inplace=True)
 
         # Join two dfs
-        return pd.concat([df, running_df], axis=1)
+        return self._concat_columns(df, running_df)
 
     def transform_bills_features(self, df):
         recent3_paybills = [f"m{i}_paybill_total_value" for i in range(1, 4)]
@@ -126,13 +156,15 @@ class FeaturePipeline:
         running_df["paybill_hghamt_6m"] = df[all_paybill_high_amount].mean(axis=1)
 
         # Calculate coefficient of variance
-        running_df["paybill_cv_3mrecent"] = df[recent3_paybills].std(axis=1) / df[recent3_paybills].mean(axis=1)
-        running_df["paybill_cv_3mold"] = df[old3_paybills].std(axis=1) / df[old3_paybills].mean(axis=1)
-        running_df["paybill_cv_6m"] = df[all_paybills].std(axis=1) / df[all_paybills].mean(axis=1)
+        running_df["paybill_cv_3mrecent"] = self._safe_div(
+            df[recent3_paybills].std(axis=1), df[recent3_paybills].mean(axis=1)
+        )
+        running_df["paybill_cv_3mold"] = self._safe_div(df[old3_paybills].std(axis=1), df[old3_paybills].mean(axis=1))
+        running_df["paybill_cv_6m"] = self._safe_div(df[all_paybills].std(axis=1), df[all_paybills].mean(axis=1))
 
-        # Central tendency by median
-        running_df["paybill_median_3mrecent"] = df[recent3_paybills].median(axis=1)
-        running_df["paybill_median_6m"] = df[all_paybills].median(axis=1)
+        # Central tendency by mean
+        running_df["paybill_avg_3mrecent"] = df[recent3_paybills].mean(axis=1)
+        running_df["paybill_avg_6m"] = df[all_paybills].mean(axis=1)
 
         # Paybill Volume calculations
         # Mean of recent 3 months and Mean of all 6 months
@@ -144,8 +176,7 @@ class FeaturePipeline:
         # old3_volume = [f"m{i}_paybill_companies" for i in range(4, 7)]
         all_volume = [f"m{i}_paybill_companies" for i in range(1, 7)]
         # df["paybill_vol_3mrecent"] = df[recent3_volume].mean(axis=1)
-        # df["paybill_vol_6m"] = df[old3_volume].mean(axis=1)
-        running_df["paybill_vol_max"] = df[all_volume].max(axis=1)
+        # running_df["paybill_vol_max"] = df[all_volume].max(axis=1)
         # df["paybill_vol_min"] = df[all_volume].min(axis=1)
 
         # Their coeffience of covarience
@@ -155,7 +186,7 @@ class FeaturePipeline:
 
         # Find, averages and remove m{i}_bill_volume features
         bill_vol_features = [f"m{i}_paybill_volume" for i in range(1, 7)]
-        running_df["bill_vol_avg"] = df[bill_vol_features].mean()
+        # running_df["bill_vol_avg"] = df[bill_vol_features].mean()
 
         # Drop all used raw features (without removing them model was slightly better than others)
         df.drop(columns=all_paybills, inplace=True)
@@ -164,7 +195,7 @@ class FeaturePipeline:
         df.drop(columns=bill_vol_features, inplace=True)
 
         # Join two dfs
-        df = pd.concat([df, running_df], axis=1)
+        df = self._concat_columns(df, running_df)
         return df
 
     def transform_agent_features(self, df):
@@ -180,14 +211,18 @@ class FeaturePipeline:
         running_df = pd.DataFrame()
         running_df["deposit_agents_hghmt_all"] = df[all_deposit_high_amount].mean(axis=1)
         # High amount drifts
-        running_df["deposit_agents_hghamt_3mrecent_drift"] = df[recent3_deposit_high_amount].mean(axis=1) / df[
-            old3_deposit_high_amount
-        ].mean(axis=1)
+        running_df["deposit_agents_hghamt_3mrecent_drift"] = self._safe_div(
+            df[recent3_deposit_high_amount].mean(axis=1), df[old3_deposit_high_amount].mean(axis=1)
+        )
 
         # Their coeffience of covarience
-        running_df["deposit_agents_cv_3mrecent"] = df[recent3_deposit].std(axis=1) / df[recent3_deposit].mean(axis=1)
-        running_df["deposit_agents_cv_3mold"] = df[old3_deposit].std(axis=1) / df[old3_deposit].mean(axis=1)
-        running_df["deposit_agents_cv_6m"] = df[all_deposit].std(axis=1) / df[all_deposit].mean(axis=1)
+        running_df["deposit_agents_cv_3mrecent"] = self._safe_div(
+            df[recent3_deposit].std(axis=1), df[recent3_deposit].mean(axis=1)
+        )
+        running_df["deposit_agents_cv_3mold"] = self._safe_div(
+            df[old3_deposit].std(axis=1), df[old3_deposit].mean(axis=1)
+        )
+        running_df["deposit_agents_cv_6m"] = self._safe_div(df[all_deposit].std(axis=1), df[all_deposit].mean(axis=1))
         # running_df["deposit_agents_6total"] = df[all_deposit].sum(axis=1)
 
         # Ratio calculations
@@ -215,36 +250,167 @@ class FeaturePipeline:
         ].min(axis=1)
 
         # Their coeffience of covarience
-        running_df["withdrawal_agents_cv_3mrecent"] = df[recent3_withdrawal].std(axis=1) / df[recent3_withdrawal].mean(
-            axis=1
+        running_df["withdrawal_agents_cv_3mrecent"] = self._safe_div(
+            df[recent3_withdrawal].std(axis=1), df[recent3_withdrawal].mean(axis=1)
         )
-        running_df["withdrawal_agents_cv_3mold"] = df[old3_withdrawal].std(axis=1) / df[old3_withdrawal].mean(axis=1)
-        running_df["withdrawal_agents_cv_6m"] = df[all_withdrawal].std(axis=1) / df[all_withdrawal].mean(axis=1)
+        running_df["withdrawal_agents_cv_3mold"] = self._safe_div(
+            df[old3_withdrawal].std(axis=1), df[old3_withdrawal].mean(axis=1)
+        )
+        running_df["withdrawal_agents_cv_6m"] = self._safe_div(
+            df[all_withdrawal].std(axis=1), df[all_withdrawal].mean(axis=1)
+        )
         # running_df["withdrawal_agents_6total"] = df[all_withdrawal].sum(axis=1)
 
         # Ratio calculations
-        running_df["recent3_withdraw_agents_ratio"] = df[recent3_withdrawal].sum(axis=1) / df[all_withdrawal].sum(
-            axis=1
+        running_df["recent3_withdraw_agents_ratio"] = self._safe_div(
+            df[recent3_withdrawal].sum(axis=1), df[all_withdrawal].sum(axis=1)
         )
-        running_df["old3_withdraw_agents_ratio"] = df[old3_withdrawal].sum(axis=1) / df[all_withdrawal].sum(axis=1)
+        running_df["old3_withdraw_agents_ratio"] = self._safe_div(
+            df[old3_withdrawal].sum(axis=1), df[all_withdrawal].sum(axis=1)
+        )
 
         # Highest amount covariance calculations only
-        running_df["withdrawal_agents_cv_3mrecent"] = df[recent3_withdrawal].std(axis=1) / df[recent3_withdrawal].mean(
-            axis=1
+        running_df["withdrawal_agents_cv_3mrecent"] = self._safe_div(
+            df[recent3_withdrawal].std(axis=1), df[recent3_withdrawal].mean(axis=1)
         )
-        running_df["withdrawal_agents_cv_3mold"] = df[old3_withdrawal].std(axis=1) / df[old3_withdrawal].mean(axis=1)
-        running_df["withdrawal_agents_cv_6m"] = df[all_withdrawal].std(axis=1) / df[all_withdrawal].mean(axis=1)
+        running_df["withdrawal_agents_cv_3mold"] = self._safe_div(
+            df[old3_withdrawal].std(axis=1), df[old3_withdrawal].mean(axis=1)
+        )
+        running_df["withdrawal_agents_cv_6m"] = self._safe_div(
+            df[all_withdrawal].std(axis=1), df[all_withdrawal].mean(axis=1)
+        )
 
         # Find, averages and drop m{i}_deposit_volume feature
-        agent_vol_features = [f"m{i}_deposit_volume" for i in range(1, 7)]
-        running_df["agent_vol_avg"] = df[agent_vol_features].mean(axis=1)
+        deposit_vol_features = [f"m{i}_deposit_volume" for i in range(1, 7)]
+        withdraw_vol_features = [f"m{i}_withdraw_volume" for i in range(1, 7)]
+        running_df["deposit_vol_avg"] = df[deposit_vol_features].mean(axis=1)
+        running_df["withdraw_vol_avg"] = df[withdraw_vol_features].mean(axis=1)
+
         # Drop all used raw features (without removing them model was slightly better than others)
         df.drop(columns=all_withdrawal, inplace=True)
-        df.drop(columns=old3_withdraw_high_amount, inplace=True)
-        df.drop(columns=agent_vol_features, inplace=True)
+        # df.drop(columns=old3_withdraw_high_amount, inplace=True)
+        df.drop(columns=deposit_vol_features, inplace=True)
+        df.drop(columns=withdraw_vol_features, inplace=True)
+        df.drop(columns=all_withdraw_high_amount, inplace=True)
 
         # Join two dfs
-        df = pd.concat([df, running_df], axis=1)
+        df = self._concat_columns(df, running_df)
+
+        return df
+
+    def transform_transfer_from_bank_features(self, df: pd.DataFrame):
+        # Transfer from bank calculations
+        recent3_transfer = [f"m{i}_transfer_from_bank_total_value" for i in range(1, 4)]
+        old3_transfer = [f"m{i}_transfer_from_bank_total_value" for i in range(4, 7)]
+        all_transfer = recent3_transfer + old3_transfer
+
+        running_df = pd.DataFrame()
+        recent3_mean = df[recent3_transfer].mean(axis=1)
+        old3_mean = df[old3_transfer].mean(axis=1)
+        running_df["transfer_from_bank_drift_3m"] = self._safe_div(recent3_mean, old3_mean)
+
+        running_df["transfer_from_bank_cv_3m"] = self._safe_div(
+            df[recent3_transfer].std(axis=1), df[recent3_transfer].mean(axis=1)
+        )
+        running_df["transfer_from_bank_cv_6m"] = self._safe_div(
+            df[all_transfer].std(axis=1), df[all_transfer].mean(axis=1)
+        )
+
+        # Volume and counts averages
+        r = range(1, 7)
+        banks_feat = [f"m{i}_transfer_from_bank_banks" for i in r]
+        volume_feat = [f"m{i}_transfer_from_bank_volume" for i in r]
+        running_df["transfer_from_bank_vol_avg"] = df[volume_feat].mean(axis=1)
+        running_df["transfer_from_bank_count_avg"] = df[banks_feat].mean(axis=1)
+
+        # Highest amt treatment
+        # m1_transfer_from_bank_highest_amount
+        hghamt_feat = [f"m{i}_transfer_from_bank_highest_amount" for i in range(1, 7)]
+        running_df["bank_transfer_recent_vs_old_diff"] = (
+            df["m1_transfer_from_bank_highest_amount"] - df["m6_transfer_from_bank_highest_amount"]
+        )
+        running_df["bank_transfer_hghamt_avg"] = df[hghamt_feat].mean(axis=1)
+
+        # Join two dfs
+        df.drop(columns=all_transfer, inplace=True)
+        df.drop(columns=banks_feat, inplace=True)
+        df.drop(columns=volume_feat, inplace=True)
+        df.drop(columns=hghamt_feat, inplace=True)
+        df = self._concat_columns(df, running_df)
+
+        return df
+
+    def transform_mm_send_features(self, df: pd.DataFrame):
+        # Transfer from bank calculations
+        recent3 = [f"m{i}_mm_send_total_value" for i in range(1, 4)]
+        old3 = [f"m{i}_mm_send_total_value" for i in range(4, 7)]
+        all_mm_send = recent3 + old3
+
+        running_df = pd.DataFrame()
+        recent3_mean = df[recent3].mean(axis=1)
+        old3_mean = df[old3].mean(axis=1)
+        running_df["mm_send_drift_3m"] = self._safe_div(recent3_mean, old3_mean)
+
+        running_df["mm_send_cv_3m"] = self._safe_div(df[recent3].std(axis=1), df[recent3].mean(axis=1))
+        running_df["mm_send_cv_6m"] = self._safe_div(df[all_mm_send].std(axis=1), df[all_mm_send].mean(axis=1))
+
+        # Volume and counts averages
+        r = range(1, 7)
+        recpients_feat = [f"m{i}_mm_send_recipients" for i in r]
+        volume_feat = [f"m{i}_mm_send_volume" for i in r]
+        running_df["mm_send_vol_avg"] = df[volume_feat].mean(axis=1)
+        running_df["mm_send_count_avg"] = df[recpients_feat].mean(axis=1)
+
+        # Highest amt treatment
+        # m1_mm_send_highest_amount
+        hghamt_feat = [f"m{i}_mm_send_highest_amount" for i in range(1, 7)]
+        running_df["mm_send_recent_vs_old_diff"] = df["m1_mm_send_highest_amount"] - df["m6_mm_send_highest_amount"]
+        running_df["mm_send_hghamt_avg"] = df[hghamt_feat].mean(axis=1)
+
+        # Join two dfs
+        df.drop(columns=all_mm_send, inplace=True)
+        df.drop(columns=recpients_feat, inplace=True)
+        df.drop(columns=volume_feat, inplace=True)
+        df.drop(columns=hghamt_feat, inplace=True)
+        df = self._concat_columns(df, running_df)
+
+        return df
+
+    def transform_received_features(self, df: pd.DataFrame):
+        # Transfer from bank calculations
+        recent3 = [f"m{i}_received_total_value" for i in range(1, 4)]
+        old3 = [f"m{i}_received_total_value" for i in range(4, 7)]
+        all_received = recent3 + old3
+
+        running_df = pd.DataFrame()
+        recent3_mean = df[recent3].mean(axis=1)
+        old3_mean = df[old3].mean(axis=1)
+        running_df["mm_received_drift_3m"] = self._safe_div(recent3_mean, old3_mean)
+
+        running_df["mm_received_cv_3m"] = self._safe_div(df[recent3].std(axis=1), df[recent3].mean(axis=1))
+        running_df["mm_received_cv_6m"] = self._safe_div(df[all_received].std(axis=1), df[all_received].mean(axis=1))
+
+        # Volume and counts averages
+        r = range(1, 7)
+        senders_feat = [f"m{i}_received_senders" for i in r]
+        volume_feat = [f"m{i}_received_volume" for i in r]
+        running_df["mm_received_vol_avg"] = df[volume_feat].mean(axis=1)
+        running_df["mm_received_count_avg"] = df[senders_feat].mean(axis=1)
+
+        # Highest amt treatment
+        # m1_mm_send_highest_amount
+        hghamt_feat = [f"m{i}_received_highest_amount" for i in range(1, 7)]
+        running_df["mm_received_recent_vs_old_diff"] = (
+            df["m1_received_highest_amount"] - df["m6_received_highest_amount"]
+        )
+        running_df["mm_received_hghamt_avg"] = df[hghamt_feat].mean(axis=1)
+
+        # Join two dfs
+        df.drop(columns=all_received, inplace=True)
+        df.drop(columns=senders_feat, inplace=True)
+        df.drop(columns=volume_feat, inplace=True)
+        df.drop(columns=hghamt_feat, inplace=True)
+        df = self._concat_columns(df, running_df)
 
         return df
 
@@ -286,15 +452,15 @@ class FeaturePipeline:
         running_df["old3_avg_balance"] = df[old3_months].mean(axis=1)
 
         # Variation in balance using coefficient of variance
-        running_df["bal_cv_3m"] = df[recent3_months].std(axis=1) / df[recent3_months].mean(axis=1)
-        running_df["bal_cv_6m"] = df[all_bal_cols].std(axis=1) / df[all_bal_cols].mean(axis=1)
-        running_df["bal_drift"] = (df[recent3_months].mean() + 0.1) / (df[old3_months].mean() + 0.1)
+        running_df["bal_cv_3m"] = self._safe_div(df[recent3_months].std(axis=1), df[recent3_months].mean(axis=1))
+        running_df["bal_cv_6m"] = self._safe_div(df[all_bal_cols].std(axis=1), df[all_bal_cols].mean(axis=1))
+        # running_df["bal_drift"] = (df[recent3_months].mean() + 0.1) / (df[old3_months].mean() + 0.1)
 
         # Remove old months
         df.drop(columns=old3_months, inplace=True)
 
-        # Join two dfs
-        df = pd.concat([df, running_df], axis=1)
+        # Join two dfs (ensure index alignment)
+        df = self._concat_columns(df, running_df)
         return df
 
     def transform(self, df: pd.DataFrame, is_train: bool = True) -> tuple[pd.DataFrame, pd.Series | None]:
@@ -329,9 +495,9 @@ class FeaturePipeline:
         new_df = pd.DataFrame(new_features, index=data.index)
         # Find any duplicates columns and remove them, but remain with the first one
         new_df = new_df.loc[:, ~new_df.columns.duplicated(keep="first")]
-        data = pd.concat([data, new_df], axis=1)
+        data = self._concat_columns(data, new_df)
 
-        # 3. 3-Month Window Median Aggregations
+        # 3. 3-Month Window mean Aggregations
         m1_3_inflow = [f"m{i}_total_inflow" for i in range(1, 4)]
         m4_6_inflow = [f"m{i}_total_inflow" for i in range(4, 7)]
         m1_3_outflow = [f"m{i}_total_outflow" for i in range(1, 4)]
@@ -353,7 +519,6 @@ class FeaturePipeline:
         df["bal_slope_3m"] = self._compute_slopes(data, "daily_avg_bal", months=3)
         df["inflow_slope_6m"] = self._compute_slopes(data, "total_inflow", months=6)
         df["outflow_slope_6m"] = self._compute_slopes(data, "total_outflow", months=6)
-        # print("Slope df shape: ", slope_df.shape)
 
         # 5. Granular End-Points (M1 & M6) and Ratios
         if "m1_daily_avg_bal" in data.columns and "m6_daily_avg_bal" in data.columns:
@@ -367,12 +532,12 @@ class FeaturePipeline:
         data["avg_old3_cashout"] = data[m4_6_outflow].mean(axis=1)
 
         # Variation in inflows using coefficient of variance
-        data["inflow_cv_3m"] = data[m1_3_inflow].std(axis=1) / data[m1_3_inflow].mean(axis=1)
-        data["inflow_cv_6m"] = data[m4_6_inflow].std(axis=1) / data[m4_6_inflow].mean(axis=1)
+        data["inflow_cv_3m"] = self._safe_div(data[m1_3_inflow].std(axis=1), data[m1_3_inflow].mean(axis=1))
+        data["inflow_cv_6m"] = self._safe_div(data[m4_6_inflow].std(axis=1), data[m4_6_inflow].mean(axis=1))
 
         # Variation in outflows using coefficient of variance
-        data["outflow_cv_3m"] = data[m1_3_outflow].std(axis=1) / data[m1_3_outflow].mean(axis=1)
-        data["outflow_cv_6m"] = data[m4_6_outflow].std(axis=1) / data[m4_6_outflow].mean(axis=1)
+        data["outflow_cv_3m"] = self._safe_div(data[m1_3_outflow].std(axis=1), data[m1_3_outflow].mean(axis=1))
+        data["outflow_cv_6m"] = self._safe_div(data[m4_6_outflow].std(axis=1), data[m4_6_outflow].mean(axis=1))
 
         # After m{i}_total_inflow/outflow calculations, remove them because the net_flow and the inflow/outflow_avg explains same thing
         data = data.drop(m4_6_inflow + m4_6_outflow, axis=1)
@@ -383,9 +548,12 @@ class FeaturePipeline:
         data = self.transform_merchant_features(data)
         # Run this modification afterall because it removes old 3 months
         data = self.dail_average_balance_tranformation(data)
+        data = self.transform_transfer_from_bank_features(data)
+        data = self.transform_mm_send_features(data)
+        data = self.transform_received_features(data)
 
-        # Concatenate it horizontally with your original data
-        data = pd.concat([data, new_df], axis=1)
+        # Concatenate it horizontally with your original data (align indexes)
+        data = self._concat_columns(data, new_df)
         # data = pd.concat([data, slope_df], axis=1)
 
         # 8. One-Hot Encoding
@@ -408,7 +576,6 @@ class FeaturePipeline:
         for s in df_cols:
             match = re.search(pattern, s)
             if match:
-                # Extract the specific keyword that triggered the match
                 keyword_found = match.group("matched_keyword")
                 # print(f"Match found! String: '{s}' | Keyword: '{keyword_found}'")
                 matched_cols.append(keyword_found)
@@ -528,7 +695,6 @@ class ModelPipeline:
         """Tunes LightGBM hyperparameters using Stratified K-Fold to balance Precision and Recall."""
         pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
 
-        print(X_train.shape, y_train.shape)
         # Currently best performer - Sept 2
         param_grid = {
             # 1. Direct control over positive class weight (scale down to boost precision)
